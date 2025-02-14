@@ -3,7 +3,6 @@ package main
 import (
 	"99-api-public/config"
 	"99-api-public/routes"
-	"99-api-public/user"
 	"99-api-public/utils"
 	"log"
 
@@ -25,17 +24,6 @@ func main() {
 		Password: config.GetEnv("REDIS_PASSWORD", ""),
 		DB:       0,
 	})
-
-	// Get all users and cache the result
-	users, err := user.GetAllUsers()
-	if err != nil {
-		log.Fatalf("Failed to get users: %v", err)
-	}
-
-	err = user.CacheUsers(rdb, users)
-	if err != nil {
-		log.Fatalf("Failed to cache users: %v", err)
-	}
 
 	// Set up routes
 	routes.SetupRoutes(r, rdb)

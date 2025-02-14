@@ -12,10 +12,10 @@ func SetupRoutes(r *gin.Engine, rdb *redis.Client) {
 
 	// Listing Service Routes
 	listingService := api.Group("/listings")
-	listingService.GET("/", handlers.ProxyListingServiceGet(rdb))
-	listingService.POST("/", handlers.ProxyListingServicePost(rdb))
+	listingService.GET("/", handlers.ProxyListingServiceGet)
+	listingService.POST("/", handlers.ProxyListingServicePost)
 
 	// User Service Routes
 	userService := api.Group("/users")
-	userService.POST("/", handlers.ProxyUserServicePost(rdb))
+	userService.POST("/", handlers.ProxyUserServicePost)
 }

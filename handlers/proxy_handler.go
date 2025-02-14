@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"99-api-public/user"
 	"99-api-public/utils"
 	"encoding/json"
 	"fmt"
@@ -13,164 +12,166 @@ import (
 	"sync"
 
 	"github.com/gin-gonic/gin"
-	"github.com/redis/go-redis/v9"
 )
 
-func ProxyListingServiceGet(rdb *redis.Client) gin.HandlerFunc {
-	return func(c *gin.Context) {
+func ProxyListingServiceGet(c *gin.Context) {
 
-		msUrl := utils.ListingServiceURL + strings.TrimSuffix(strings.TrimPrefix(c.Request.URL.Path, "/public-api"), "/")
-		resp, err := utils.Client.R().
-			SetQueryParamsFromValues(c.Request.URL.Query()).
-			SetHeader("Content-Type", "application/json").
-			Get(msUrl)
+	msUrl := utils.ListingServiceURL + strings.TrimSuffix(strings.TrimPrefix(c.Request.URL.Path, "/public-api"), "/")
+	resp, err := utils.Client.R().
+		SetQueryParamsFromValues(c.Request.URL.Query()).
+		SetHeader("Content-Type", "application/json").
+		Get(msUrl)
 
-		if err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": "Listing Service unavailable"})
-			return
-		}
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Listing Service unavailable"})
+		return
+	}
 
-		var result struct {
-			Result   bool                     `json:"result"`
-			Listings []map[string]interface{} `json:"listings"`
-		}
-		if err := json.Unmarshal(resp.Body(), &result); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse listings"})
-			return
-		}
-		listings := result.Listings
+	var result struct {
+		Result   bool                     `json:"result"`
+		Listings []map[string]interface{} `json:"listings"`
+	}
+	if err := json.Unmarshal(resp.Body(), &result); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse listings"})
+		return
+	}
+	listings := result.Listings
 
-		var wg sync.WaitGroup
-		errChan := make(chan error, len(listings))
-		userInfoChan := make(chan struct {
-			index int
-			user  user.User
-		}, len(listings))
+	var wg sync.WaitGroup
+	errChan := make(chan error, len(listings))
+	userInfoChan := make(chan struct {
+		index int
+		user  map[string]interface{}
+	}, len(listings))
 
-		for i, listing := range listings {
-			wg.Add(1)
-			go func(i int, listing map[string]interface{}) {
-				defer wg.Done()
-				userID := int(listing["user_id"].(float64))
+	for i, listing := range listings {
+		wg.Add(1)
+		go func(i int, listing map[string]interface{}) {
+			defer wg.Done()
+			userID := int(listing["user_id"].(float64))
 
-				userInfo, err := user.GetUserFromCache(rdb, userID)
-				if err != nil {
-					errChan <- err
-					return
-				}
-				userInfoChan <- struct {
-					index int
-					user  user.User
-				}{index: i, user: *userInfo}
-			}(i, listing)
-		}
+			resp, err := utils.Client.R().
+				Get(utils.UserServiceURL + "/users/" + strconv.Itoa(userID))
 
-		go func() {
-			wg.Wait()
-			close(errChan)
-			close(userInfoChan)
-		}()
-
-		for i := 0; i < len(listings); i++ {
-			select {
-			case err := <-errChan:
-				if err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get user information"})
-					return
-				}
-			case userInfo := <-userInfoChan:
-				listings[userInfo.index]["user"] = userInfo.user
-				delete(listings[userInfo.index], "user_id")
+			if err != nil {
+				errChan <- err
+				return
 			}
-		}
 
-		result.Listings = listings
-		c.JSON(http.StatusOK, result)
-
+			var userInfo struct {
+				Result bool                   `json:"result"`
+				User   map[string]interface{} `json:"user"`
+			}
+			if err := json.Unmarshal(resp.Body(), &userInfo); err != nil {
+				errChan <- err
+				return
+			}
+			userInfoChan <- struct {
+				index int
+				user  map[string]interface{}
+			}{index: i, user: userInfo.User}
+		}(i, listing)
 	}
+
+	go func() {
+		wg.Wait()
+		close(errChan)
+		close(userInfoChan)
+	}()
+
+	for i := 0; i < len(listings); i++ {
+		select {
+		case err := <-errChan:
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get user information"})
+				return
+			}
+		case userInfo := <-userInfoChan:
+			listings[userInfo.index]["user"] = userInfo.user
+			delete(listings[userInfo.index], "user_id")
+		}
+	}
+
+	result.Listings = listings
+	c.JSON(http.StatusOK, result)
+
 }
 
-func ProxyListingServicePost(rdb *redis.Client) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		msUrl := utils.ListingServiceURL + strings.TrimSuffix(strings.TrimPrefix(c.Request.URL.Path, "/public-api"), "/")
+func ProxyListingServicePost(c *gin.Context) {
+	msUrl := utils.ListingServiceURL + strings.TrimSuffix(strings.TrimPrefix(c.Request.URL.Path, "/public-api"), "/")
 
-		formData, err := convertJSONToFormData(c)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-
-		userID, err := strconv.Atoi(formData.Get("user_id"))
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
-			return
-		}
-		_, err = user.GetUserFromCache(rdb, userID)
-		if err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
-			return
-		}
-
-		resp, err := utils.Client.R().
-			SetBody(formData.Encode()).
-			SetQueryParamsFromValues(c.Request.URL.Query()).
-			SetHeader("Content-Type", "application/x-www-form-urlencoded").
-			Post(msUrl)
-
-		if err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": "Listing Service unavailable"})
-			return
-		}
-
-		var result struct {
-			Result  bool                   `json:"result"`
-			Listing map[string]interface{} `json:"listing"`
-		}
-		if err := json.Unmarshal(resp.Body(), &result); err != nil {
-			log.Printf("Error when parse result %s", err.Error())
-		}
-
-		c.JSON(http.StatusOK, gin.H{"listing": result.Listing})
-
+	formData, err := convertJSONToFormData(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
+
+	userID, err := strconv.Atoi(formData.Get("user_id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+		return
+	}
+	_, err = utils.Client.R().
+		Get(utils.UserServiceURL + "/users/" + strconv.Itoa(userID))
+
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "User Service unavailable"})
+		return
+	}
+
+	resp, err := utils.Client.R().
+		SetBody(formData.Encode()).
+		SetQueryParamsFromValues(c.Request.URL.Query()).
+		SetHeader("Content-Type", "application/x-www-form-urlencoded").
+		Post(msUrl)
+
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Listing Service unavailable"})
+		return
+	}
+
+	var result struct {
+		Result  bool                   `json:"result"`
+		Listing map[string]interface{} `json:"listing"`
+	}
+	if err := json.Unmarshal(resp.Body(), &result); err != nil {
+		log.Printf("Error when parse result %s", err.Error())
+	}
+
+	c.JSON(http.StatusOK, gin.H{"listing": result.Listing})
+
 }
 
-func ProxyUserServicePost(rdb *redis.Client) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		msUrl := utils.UserServiceURL + strings.TrimSuffix(strings.TrimPrefix(c.Request.URL.Path, "/public-api"), "/")
+func ProxyUserServicePost(c *gin.Context) {
+	msUrl := utils.UserServiceURL + strings.TrimSuffix(strings.TrimPrefix(c.Request.URL.Path, "/public-api"), "/")
 
-		formData, err := convertJSONToFormData(c)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-
-		resp, err := utils.Client.R().
-			SetBody(formData.Encode()).
-			SetQueryParamsFromValues(c.Request.URL.Query()).
-			SetHeader("Content-Type", "application/x-www-form-urlencoded").
-			Post(msUrl)
-
-		if err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": "User Service unavailable"})
-			return
-		}
-
-		var result struct {
-			Result bool      `json:"result"`
-			User   user.User `json:"user"`
-		}
-		if err := json.Unmarshal(resp.Body(), &result); err != nil {
-			log.Printf("Error when parse result %s", err.Error())
-		}
-
-		if err := user.SetUserToCache(rdb, result.User); err != nil {
-			log.Printf("Failed to update cache %s", err.Error())
-		}
-
-		c.JSON(http.StatusOK, gin.H{"user": result.User})
-
+	formData, err := convertJSONToFormData(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
+
+	resp, err := utils.Client.R().
+		SetBody(formData.Encode()).
+		SetQueryParamsFromValues(c.Request.URL.Query()).
+		SetHeader("Content-Type", "application/x-www-form-urlencoded").
+		Post(msUrl)
+
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "User Service unavailable"})
+		return
+	}
+
+	var result struct {
+		Result bool                   `json:"result"`
+		User   map[string]interface{} `json:"user"`
+	}
+	if err := json.Unmarshal(resp.Body(), &result); err != nil {
+		log.Printf("Error when parse result %s", err.Error())
+	}
+
+	c.JSON(http.StatusOK, gin.H{"user": result.User})
+
 }
 
 func convertJSONToFormData(c *gin.Context) (url.Values, error) {
