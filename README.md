@@ -11,8 +11,9 @@ This public API provides two main features for retrieving user information for e
 1. Fetch user details for each listing by calling the user service API.
    This approach is implemented in the `feature/get-user-by-api` branch.
 2. Retrieve user details for each listing from Redis, where the data is initially pooled and subsequently updated whenever there are changes to the user information.
-   This approach is implemented in the `main` or `feature/get-user-by-redis-pooling` branch.
+   This approach is implemented in the `feature/get-user-by-redis-pooling` branch.
 
+Currently, the `main` branch is merged with the `feature/get-user-by-api` branch. To see the implementation using Redis, check out the `feature/get-user-by-redis-pooling` branch.
 These features ensure that each listing includes comprehensive user details, enhancing the overall data quality and usability.
 
 
